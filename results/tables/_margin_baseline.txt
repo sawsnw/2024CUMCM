@@ -1,0 +1,12 @@
+基线 L0=13.525248
+  t=-100  G=1.032797  (worst pair 1,3)
+  t= -75  G=1.026113  (worst pair 1,3)
+  t= -50  G=1.016976  (worst pair 1,3)
+  t= -25  G=1.001239  (worst pair 2,4)
+  t=   0  G=0.971549  (worst pair 2,4)
+  t=  25  G=0.411768  (worst pair 7,24)
+  t=  50  G=0.363549  (worst pair 1,39)
+  t=  75  G=0.369029  (worst pair 1,69)
+  t= 100  G=0.397066  (worst pair 1,96)
+最小裕量 min G = 0.275960 m，出现在 t=30, 板凳对 (1,17)
+总耗时 22.9 s

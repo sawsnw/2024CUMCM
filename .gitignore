@@ -1,0 +1,28 @@
+# Python 虚拟环境
+.venv/
+venv/
+env/
+
+# Python 缓存与构建产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE 相关
+.vscode/
+.idea/
+
+# 运行输出（日志不覆盖，保留在本地）
+results/logs/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
