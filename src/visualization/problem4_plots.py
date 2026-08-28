@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from src.config import FIGURES_DIR, TURN_SPACE_RADIUS
-from src.models.problem4 import s_curve_points
+from src.models.problem4 import full_path_points, s_curve_points
 
 # 中文字体（Windows 常见字体，按顺序回退）
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "SimSun"]
@@ -51,39 +51,72 @@ def plot_turning_comparison(
     # 调头空间边界圆
     ax.plot(cx, cy, "--", color="k", lw=1.2, alpha=0.7, label="调头空间边界")
 
-    # 基准曲线
+    # 基准曲线（完整路径 + S 形两段圆弧）
+    fp_b = full_path_points(g_baseline, n=400)
+    ax.plot(fp_b[:, 0], fp_b[:, 1], "-", color="#1f77b4", lw=1.2, alpha=0.35)
     a1b, a2b = s_curve_points(g_baseline, n1=150, n2=150)
     sb = np.vstack([a1b, a2b[1:]])
     ax.plot(sb[:, 0], sb[:, 1], "-", color="#1f77b4", lw=2.6,
             label=f"基准曲线 L0={g_baseline['L_S']:.2f} m")
-    ax.scatter([g_baseline["A"][0]], [g_baseline["A"][1]], color="#1f77b4", s=30)
-    ax.scatter([g_baseline["C"][0]], [g_baseline["C"][1]], color="#1f77b4", s=30)
+    ax.scatter([g_baseline["A"][0]], [g_baseline["A"][1]], color="#1f77b4", s=18)
+    ax.scatter([g_baseline["B"][0]], [g_baseline["B"][1]], color="#1f77b4", s=18)
+    ax.scatter([g_baseline["C"][0]], [g_baseline["C"][1]], color="#1f77b4", s=18)
 
-    # 最优曲线
+    # 最优曲线（完整路径 + S 形两段圆弧）
+    fp_o = full_path_points(g_optimal, n=400)
+    ax.plot(fp_o[:, 0], fp_o[:, 1], "-", color="#d62728", lw=1.2, alpha=0.35)
     a1o, a2o = s_curve_points(g_optimal, n1=150, n2=150)
     so = np.vstack([a1o, a2o[1:]])
     ax.plot(so[:, 0], so[:, 1], "-", color="#d62728", lw=2.6,
             label=f"最优曲线 L*={g_optimal['L_S']:.2f} m")
-    ax.scatter([g_optimal["A"][0]], [g_optimal["A"][1]], color="#d62728", s=30)
-    ax.scatter([g_optimal["C"][0]], [g_optimal["C"][1]], color="#d62728", s=30)
+    ax.scatter([g_optimal["A"][0]], [g_optimal["A"][1]], color="#d62728", s=18)
+    ax.scatter([g_optimal["B"][0]], [g_optimal["B"][1]], color="#d62728", s=18)
+    ax.scatter([g_optimal["C"][0]], [g_optimal["C"][1]], color="#d62728", s=18)
 
     # 圆心
     for c, color, name in [(g_baseline["c1"], "#1f77b4", "O1"), (g_baseline["c2"], "#1f77b4", "O2"),
                            (g_optimal["c1"], "#d62728", "O1'"), (g_optimal["c2"], "#d62728", "O2'")]:
-        ax.plot([c[0]], [c[1]], "o", color=color, ms=5)
+        ax.plot([c[0]], [c[1]], "o", color=color, ms=3.5)
 
-    ax.scatter([0.0], [0.0], color="k", s=25)
+    # 最优曲线两段圆弧的外切点 B（弧1 与弧2 连接处，已在上方 scatter 统一绘制）
+
+    # 切点与圆心标注
+    for p, label_, xytext in [
+        (g_optimal["A"], "A'", (0.3, 1.3)),
+        (g_optimal["C"], "C'（B'）", (0.3, 1.3)),
+        (g_optimal["c1"], "O1'", (0.35, 0.35)),
+        (g_optimal["c2"], "O2'", (0.35, 0.35)),
+    ]:
+        ax.annotate(label_, xy=tuple(p), xytext=xytext,
+                    textcoords="offset points", fontsize=8, color="#d62728")
+    for p, label_, xytext in [
+        (g_baseline["A"], "A", (0.3, 1.3)),
+        (g_baseline["B"], "B", (0.3, 1.3)),
+        (g_baseline["C"], "C", (0.3, 1.3)),
+    ]:
+        ax.annotate(label_, xy=tuple(p), xytext=xytext,
+                    textcoords="offset points", fontsize=8, color="#1f77b4")
+
+    ax.scatter([0.0], [0.0], color="k", s=15)
     ax.annotate("螺线中心 O", xy=(0.0, 0.0), xytext=(0.8, -1.1),
                 arrowprops=dict(arrowstyle="->", lw=0.8), fontsize=9)
 
-    # 缩短量标注
+    # 缩短量标注（题目无圆弧角约束，两段圆弧角度如实显示）
     dL = g_baseline["L_S"] - g_optimal["L_S"]
     eta = 100.0 * dL / g_baseline["L_S"]
+    import math
+    a1_deg = math.degrees(g_optimal["ang1"])
+    a2_deg = math.degrees(g_optimal["ang2"])
     ax.text(
         0.0, -TURN_SPACE_RADIUS * 1.12,
         f"缩短量 ΔL = {dL:.2f} m，缩短比例 η = {eta:.2f}%",
         fontsize=10, ha="center",
         bbox=dict(boxstyle="round,pad=0.35", fc="#fff7e6", ec="#d62728", lw=0.8),
+    )
+    ax.text(
+        0.0, -TURN_SPACE_RADIUS * 1.21,
+        f"最优两段圆弧圆心角 α1={a1_deg:.1f}°、α2={a2_deg:.1f}°",
+        fontsize=9, ha="center", color="#d62728",
     )
 
     ax.set_xlabel("x (m)")

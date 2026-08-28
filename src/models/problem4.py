@@ -285,11 +285,9 @@ def s_curve_points(g: dict, n1: int = 200, n2: int = 200) -> tuple[np.ndarray, n
         diff = (a1 - a0) % (2 * math.pi)
         if sgn < 0:
             diff = (2 * math.pi - diff) % (2 * math.pi)
-        pts = []
-        for k in range(n + 1):
-            a = a0 + sgn * diff * k / n
-            pts.append(c + r * np.array([math.cos(a), math.sin(a)]))
-        return np.array(pts)
+        # numpy 向量化：一次生成全部采样角，避免逐点 Python 循环
+        a = a0 + sgn * diff * np.arange(n + 1) / n
+        return c + r * np.stack((np.cos(a), np.sin(a)), axis=1)
 
     arc1 = _arc(g["c1"], 2 * R, g["A"], g["B"], g["sgn1"], n1)
     arc2 = _arc(g["c2"], R, g["B"], g["C"], g["sgn2"], n2)
@@ -415,11 +413,47 @@ def path_tangent(s: float, g: dict) -> np.ndarray:
     return -inward_spiral_derivative(theta) / _norm(inward_spiral_derivative(theta))
 
 
+def full_path_points(
+    g: dict,
+    s_in: float | None = None,
+    s_out: float | None = None,
+    n: int = 400,
+) -> np.ndarray:
+    """采样完整调头路径 Γ(s)（盘入螺线—圆弧1—圆弧2—盘出螺线）上的点。
+
+    盘入/盘出螺线段默认自动延伸到调头空间边界（|P| = ρ）处，使整条
+    “进入调头空间—S 形调头—离开调头空间”的路径在图中完整可见。
+
+    Args:
+        g: solve_s_curve 返回的几何 dict。
+        s_in: 盘入段起始弧长（默认取螺线上 |P|=ρ 处对应弧长，s<0）。
+        s_out: 盘出段终止弧长（默认取螺线上 |P|=ρ 处对应弧长，s>L_S）。
+        n: 采样点数。
+
+    Returns:
+        (n, 2) 的完整路径点数组。
+    """
+    if s_in is None:
+        # 盘入螺线上 |P(θ)|=bθ=ρ → θ_b=ρ/b；弧长 s=-(b/2)[H(θ_b)-H(θa)]
+        theta_b = TURN_RADIUS / P4_B
+        s_in = -(0.5 * P4_B) * (_H(theta_b) - _H(g["theta_a"]))
+    if s_out is None:
+        theta_b = TURN_RADIUS / P4_B
+        s_out = g["L_S"] + (0.5 * P4_B) * (_H(theta_b) - _H(g["theta_c"]))
+    ss = np.linspace(s_in, s_out, n)
+    return np.array([path_point(float(s), g) for s in ss])
+
+
 # ============================================================
 # 各把手位置与速度递推（文档第 10、11 节）
 # ============================================================
 
-def solve_handle_arc_parameter(s_prev: float, distance: float, g: dict) -> float:
+def solve_handle_arc_parameter(
+    s_prev: float,
+    distance: float,
+    g: dict,
+    max_iter: int = 45,
+) -> float:
     """求前一把手后侧、与前一位置相距 distance 的把手弧长参数（式 37）。
 
     沿路径向后搜索使 ‖Γ(s) - Γ(s_prev)‖ = distance 的最近后向解：
@@ -430,6 +464,7 @@ def solve_handle_arc_parameter(s_prev: float, distance: float, g: dict) -> float
         s_prev: 前一把手的弧长参数（m）。
         distance: 固定弦长（m），d_i = 2.86（龙头）或 1.65（龙身/龙尾）。
         g: solve_s_curve 返回的几何 dict。
+        max_iter: 二分迭代次数（越大精度越高，默认 45）。
 
     Returns:
         后一把手的弧长参数 s（m，满足 s < s_prev）。
@@ -456,7 +491,7 @@ def solve_handle_arc_parameter(s_prev: float, distance: float, g: dict) -> float
         else:
             raise RuntimeError("向后搜索 60 次倍增仍未找到弦长解")
     # 二分求根：f(lo) < 0 ≤ f(hi)
-    for _ in range(45):
+    for _ in range(max_iter):
         mid = 0.5 * (lo + hi)
         if f(mid) < 0.0:
             lo = mid
@@ -465,7 +500,13 @@ def solve_handle_arc_parameter(s_prev: float, distance: float, g: dict) -> float
     return 0.5 * (lo + hi)
 
 
-def compute_dragon_at(t: float, g: dict, need_speed: bool = True) -> tuple:
+def compute_dragon_at(
+    t: float,
+    g: dict,
+    need_speed: bool = True,
+    return_s_params: bool = False,
+    bisect_iter: int = 45,
+) -> tuple:
     """计算时刻 t 全部 224 个把手的位置与速度。
 
     龙头前把手 s0 = t（速度恒 1 m/s，式 35、36）；其余把手由固定弦长
@@ -475,12 +516,15 @@ def compute_dragon_at(t: float, g: dict, need_speed: bool = True) -> tuple:
         t: 时间（s），以调头开始（龙头到达圆弧1起点）为零时刻。
         g: solve_s_curve 返回的几何 dict。
         need_speed: 是否计算速度（默认 True）。
+        return_s_params: 是否同时返回各把手弧长参数（默认 False）。
+        bisect_iter: 弦长方程二分的迭代次数（默认 45，用于性能控制）。
 
     Returns:
         need_speed=True 时返回 (positions, speeds)：
             positions: shape (224, 2) 的把手中心坐标；
             speeds: shape (224,) 的速度大小（m/s）。
         need_speed=False 时只返回 positions。
+        return_s_params=True 时在末尾追加 s_params（shape (224,) 的弧长参数）。
     """
     distances = handle_distances()
     s_params = np.zeros(TOTAL_HANDLES)
@@ -488,20 +532,26 @@ def compute_dragon_at(t: float, g: dict, need_speed: bool = True) -> tuple:
     s_params[0] = t
     positions[0] = path_point(t, g)
     for i in range(1, TOTAL_HANDLES):
-        s_i = solve_handle_arc_parameter(s_params[i - 1], distances[i], g)
+        s_i = solve_handle_arc_parameter(
+            s_params[i - 1], distances[i], g, max_iter=bisect_iter
+        )
         s_params[i] = s_i
         positions[i] = path_point(s_i, g)
     if not need_speed:
         return positions
-    speeds = np.zeros(TOTAL_HANDLES)
+    # 速度递推（式 40）：v_i = ṡ_i·τ_i，其中 ṡ_i/ṡ_{i-1} = (dP·τ_{i-1})/(dP·τ_i)
+    # numpy 向量化：先批量求全部切向量与相邻位移，再累乘得到速率。
+    tau_all = np.array([path_tangent(s, g) for s in s_params])  # (224, 2)
+    dP_all = np.zeros((TOTAL_HANDLES, 2))
+    dP_all[1:] = positions[1:] - positions[:-1]                 # (224, 2)
+    dot_prev = np.einsum("ij,ij->i", dP_all[1:], tau_all[:-1])
+    dot_i = np.einsum("ij,ij->i", dP_all[1:], tau_all[1:])
+    ratios = np.abs(dot_prev / dot_i)
+    speeds = np.empty(TOTAL_HANDLES)
     speeds[0] = 1.0
-    for i in range(1, TOTAL_HANDLES):
-        tau_prev = path_tangent(s_params[i - 1], g)
-        tau_i = path_tangent(s_params[i], g)
-        dP = positions[i] - positions[i - 1]
-        dot_prev = np.dot(dP, tau_prev)
-        dot_i = np.dot(dP, tau_i)
-        speeds[i] = abs((dot_prev / dot_i) * speeds[i - 1])
+    speeds[1:] = np.cumprod(ratios)
+    if return_s_params:
+        return positions, speeds, s_params
     return positions, speeds
 
 
@@ -569,7 +619,9 @@ def optimize_turning_curve(
     for theta_a in thetas:
         for theta_c in thetas:
             for orientation in (ORIENTATION_PLUS, ORIENTATION_MINUS):
-                r = turning_candidate(theta_a, theta_c, orientation, arc_sample)
+                r = turning_candidate(
+                    theta_a, theta_c, orientation, arc_sample,
+                )
                 if r is not None:
                     candidates.append((r[0], theta_a, theta_c, orientation, r[1]))
     candidates.sort(key=lambda x: x[0])
