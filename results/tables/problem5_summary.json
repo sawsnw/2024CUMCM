@@ -1,0 +1,25 @@
+{
+  "Lambda_max": 3.512479962612,
+  "s0_star": 0.964,
+  "i_star": 1,
+  "v_h_max": 0.56939826598,
+  "critical_time": 1.693015,
+  "grid_lambda_max": 3.462870421,
+  "grid_v_h_max": 0.577555541,
+  "D_min": 0.676965575452,
+  "s_dmin": 139.0,
+  "speed_limit": 2.0,
+  "geometry": {
+    "theta_a": 5.602429,
+    "theta_c": 2.65649,
+    "R": 0.205685912,
+    "L1": 1.287407937,
+    "L2": 4.3904e-05,
+    "L_S": 1.287451841
+  },
+  "checks": {
+    "max_chord_error": 0.0,
+    "linear_scaling_error": 0.0,
+    "grid_vs_fine_rel_diff_percent": 1.4124
+  }
+}

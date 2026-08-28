@@ -145,3 +145,29 @@ TURN_SPACE_RADIUS = TURN_RADIUS     # 调头空间半径 ρ = 4.5 m（复用问�
 P4_RESULT_TEMPLATE_PATH = os.path.join(DATA_DIR, "result4.xlsx")
 P4_RESULT_PATH = os.path.join(TABLES_DIR, "result4.xlsx")
 P4_ROUTE_FIG = os.path.join(FIGURES_DIR, "problem4_route.png")
+
+# ============================================================
+# 问题五：龙头最大行进速度模型参数
+# ============================================================
+# 各把手速度上限（题目给定，m/s）
+P5_SPEED_LIMIT = 2.0
+# 问题四最优行进路径的切点参数与朝向（solve_problem4.py VERIFIED_OPTIMAL）
+P5_OPTIMAL_THETA_A = 5.602429     # 最优盘入螺线切点参数（rad）
+P5_OPTIMAL_THETA_C = 2.656490     # 最优盘出螺线切点参数（rad）
+P5_OPTIMAL_ORIENTATION = -1       # ORIENTATION_MINUS（S 形朝向常数）
+
+# 龙头弧长搜索范围（m）：队伍总长约 371 m，需覆盖整个队伍扫过 S 形区
+P5_SCAN_MIN = -400.0              # 搜索区间下界（m）
+P5_SCAN_MAX = 400.0               # 搜索区间上界（m）
+# 搜索步长（m）
+P5_COARSE_STEP = 1.0              # 宽范围粗扫步长（m）
+P5_FINE_STEP = 0.01               # 候选局部加密步长（m）
+P5_ULTRA_FINE_STEP = 0.001        # 峰值精确加密步长（m）
+P5_REFINE_RADIUS = 2.0            # 候选局部加密半径（m）
+
+# 问题五结果文件
+P5_LAMBDA_TABLE = os.path.join(TABLES_DIR, "problem5_lambda_curve.xlsx")
+P5_SUMMARY_PATH = os.path.join(TABLES_DIR, "problem5_summary.json")
+P5_LAMBDA_FIG = os.path.join(FIGURES_DIR, "problem5_lambda_curve.png")
+P5_SPEEDS_FIG = os.path.join(FIGURES_DIR, "problem5_critical_speeds.png")
+P5_CONFIG_FIG = os.path.join(FIGURES_DIR, "problem5_critical_config.png")
