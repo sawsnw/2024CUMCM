@@ -56,9 +56,14 @@ def setup_logger(
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
 
-    # 控制台日志处理器
+    # 控制台日志处理器（终端可能为 GBK 编码，用 errors='replace' 避免特殊字符报错）
     if add_console:
         console_handler = logging.StreamHandler(sys.stdout)
+        if hasattr(sys.stdout, "reconfigure"):
+            try:
+                sys.stdout.reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
         console_handler.setLevel(log_level)
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)

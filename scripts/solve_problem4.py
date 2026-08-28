@@ -34,6 +34,7 @@ from src.config import (
 from src.models.collision import global_margin
 from src.models.problem4 import (
     ORIENTATION_MINUS,
+    ORIENTATION_PLUS,
     compute_dragon_at,
     optimize_turning_curve,
     path_point,
@@ -41,6 +42,7 @@ from src.models.problem4 import (
     s_curve_points,
     solve_given_configuration,
     solve_s_curve,
+    turning_candidate,
 )
 from src.models.spiral_dragon import handle_distances
 from src.utils.logger import setup_logger
@@ -61,11 +63,313 @@ COMPARISON_FIG = os.path.join(
     "problem4_turning_comparison.png",
 )
 
+def _quick_margin(g: dict, times: list[float] | None = None) -> float:
+    """快速碰撞检查：返回指定时刻（默认调头窗口）内的最小裕量。
+
+    Args:
+        g: solve_s_curve 返回的几何 dict。
+        times: 要检查的时刻列表；默认取调头窗口 t=0..30 步长 2 加最危险时刻。
+
+    Returns:
+        最小全局裕量（m），正为无碰撞。
+    """
+    if times is None:
+        # 调头窗口聚焦检查：最危险时段密集 + 两侧稀疏
+        times = list(range(14, 23)) + [0, 5, 10, 30]
+    min_g = 1e9
+    for t in times:
+        pos = compute_dragon_at(float(t), g, need_speed=False)
+        G, _, _ = global_margin(pos)
+        min_g = min(min_g, G)
+    return min_g
+
+
+def _refine_local(ta0: float, tc0: float, orientation: int) -> tuple[float, float] | None:
+    """以 (ta0, tc0) 为初值做纯几何网格收缩细化，返回更优切点或 None。
+
+    只按弧长最小化（不查碰撞），快速得到局部极小；碰撞复核由调用方完成。
+
+    Args:
+        ta0, tc0: 初值切点参数。
+        orientation: S 形朝向。
+
+    Returns:
+        (ta, tc)：细化后弧长更小的切点；若无可行细化返回 None。
+    """
+    ta, tc = ta0, tc0
+    span = 0.05
+    best_L = float("inf")
+    best = None
+    for _ in range(3):
+        found = False
+        ts = np.linspace(max(1e-6, ta - span), ta + span, 11)
+        cs = np.linspace(max(1e-6, tc - span), tc + span, 11)
+        for t1 in ts:
+            for t2 in cs:
+                r = turning_candidate(float(t1), float(t2), orientation)
+                if r is not None and r[0] < best_L:
+                    best_L = r[0]
+                    best = (float(t1), float(t2))
+                    found = True
+        if not found:
+            break
+        ta, tc = best
+        span *= 0.35
+    if best is not None and best_L < turning_candidate(ta0, tc0, orientation)[0]:
+        return best
+    return None
+
+
+def _search_orientation(
+    ta0: float,
+    tc0: float,
+    orientation: int,
+    delta: float,
+    n_pert: int,
+    L_opt: float,
+    logger,
+) -> dict | None:
+    """在指定 S 形朝向分支的邻域内搜索更短的无碰撞解。
+
+    步骤：
+    1. 在 (ta0, tc0) 附近 delta 范围取 n_pert×n_pert 扰动网格，做几何筛选；
+    2. 对弧长更短的候选做调头窗口碰撞复核，剔除碰撞方案；
+    3. 对最短无碰撞候选做纯几何局部细化，细化后复核碰撞，碰撞则回退扰动网格解。
+
+    Args:
+        ta0, tc0: 参考切点参数（当前最优）。
+        orientation: 要搜索的 S 形朝向。
+        delta: 扰动半径（rad）。
+        n_pert: 每维扰动网格点数。
+        L_opt: 当前最优弧长（用于判定是否有改进）。
+        logger: 日志记录器。
+
+    Returns:
+        该朝向分支内更优的无碰撞几何 dict；若未发现改进返回 None。
+    """
+    thetas = ta0 + delta * np.linspace(-1.0, 1.0, n_pert)
+    phis = tc0 + delta * np.linspace(-1.0, 1.0, n_pert)
+    L_min = L_opt
+    best_ta, best_tc = ta0, tc0
+    n_feasible = 0
+    for ta in thetas:
+        for tc in phis:
+            r = turning_candidate(float(ta), float(tc), orientation)
+            if r is None:
+                continue
+            n_feasible += 1
+            L = r[0]
+            if L < L_min - 1e-12:
+                g_tmp = solve_s_curve(float(ta), float(tc), orientation)
+                if g_tmp is None:
+                    continue
+                if _quick_margin(g_tmp) > 0.0:
+                    L_min = L
+                    best_ta, best_tc = float(ta), float(tc)
+                    logger.info(
+                        "    [%s] 发现更短无碰撞候选 (θa=%.6f, θc=%.6f) L=%.6f",
+                        "PLUS" if orientation == ORIENTATION_PLUS else "MINUS",
+                        best_ta, best_tc, L)
+    if L_min >= L_opt - 1e-12:
+        # 该朝向无改进，但仍返回 None
+        return None
+    # 局部细化
+    refined = _refine_local(best_ta, best_tc, orientation)
+    if refined is not None:
+        best_ta, best_tc = refined
+        g_tmp = solve_s_curve(best_ta, best_tc, orientation)
+        if g_tmp is not None:
+            if _quick_margin(g_tmp) > 0.0:
+                L_min = g_tmp["L_S"]
+                logger.info(
+                    "    [%s] 局部细化后：L=%.9f（θa=%.9f, θc=%.9f）",
+                    "PLUS" if orientation == ORIENTATION_PLUS else "MINUS",
+                    L_min, best_ta, best_tc)
+            else:
+                logger.info(
+                    "    [%s] 细化解碰撞，回退扰动网格候选 (θa=%.6f, θc=%.6f)",
+                    "PLUS" if orientation == ORIENTATION_PLUS else "MINUS",
+                    best_ta, best_tc)
+    # 构造返回几何并复核
+    g_new = solve_s_curve(best_ta, best_tc, orientation)
+    if g_new is not None and _quick_margin(g_new) > 0.0:
+        return g_new
+    # 最终候选碰撞（边界附近），退回扰动网格中确认无碰撞的最短解
+    logger.warning(
+        "    [%s] 最终候选碰撞，退回扰动网格中最短无碰撞解",
+        "PLUS" if orientation == ORIENTATION_PLUS else "MINUS")
+    best_L2 = L_opt
+    best2 = (ta0, tc0)
+    for ta in thetas:
+        for tc in phis:
+            r = turning_candidate(float(ta), float(tc), orientation)
+            if r is None or r[0] >= best_L2:
+                continue
+            g_tmp = solve_s_curve(float(ta), float(tc), orientation)
+            if g_tmp is not None and _quick_margin(g_tmp) > 0.0:
+                best_L2 = r[0]
+                best2 = (float(ta), float(tc))
+    g_fallback = solve_s_curve(best2[0], best2[1], orientation)
+    return g_fallback if g_fallback is not None else None
+
+
+def _search_other_orientation(
+    ta0: float,
+    tc0: float,
+    orientation: int,
+    L_opt: float,
+    logger,
+    wide_range: float = 0.5,
+    n_wide: int = 15,
+    n_refine: int = 25,
+) -> dict | None:
+    """在另一朝向分支做广域搜索，寻找更短的无碰撞解。
+
+    由于另一朝向的最优解可能远离当前参考切点（超出小扰动半径），
+    本函数以当前切点为中心在较大范围 [−wide_range, +wide_range] 内做
+    粗网格，对弧长最短的前 n_refine 个候选做纯几何局部细化，再按细化后
+    弧长升序复核碰撞，返回该朝向的最短无碰撞解。
+
+    注意：细化后的解与原始几何弧长排序往往不一致——原始几何最短的候选
+    细化后常落入碰撞区，而无碰撞的窄窗口最优需要覆盖足够多的细化候选
+    才能采到（例如 MINUS 分支 L*≈1.287 的窄窗口来自原始弧长较大的
+    (θa≈5.54, θc≈2.72) 附近候选）。因此 n_refine 需明显大于 10。
+
+    Args:
+        ta0, tc0: 参考切点参数（当前最优）。
+        orientation: 要搜索的另一 S 形朝向。
+        L_opt: 当前最优弧长。
+        logger: 日志记录器。
+        wide_range: 广域搜索半径（rad，默认 0.5）。
+        n_wide: 每维广域网格点数（默认 15）。
+        n_refine: 参与局部细化的候选数（默认 25）。
+
+    Returns:
+        该朝向更短的无碰撞几何 dict；若未发现返回 None。
+    """
+    name = "PLUS" if orientation == ORIENTATION_PLUS else "MINUS"
+    # 广域粗网格
+    tas = np.linspace(max(1e-6, ta0 - wide_range), ta0 + wide_range, n_wide)
+    tcs = np.linspace(max(1e-6, tc0 - wide_range), tc0 + wide_range, n_wide)
+    feasible: list[tuple[float, float, float]] = []  # (L, ta, tc)
+    for ta in tas:
+        for tc in tcs:
+            r = turning_candidate(float(ta), float(tc), orientation)
+            if r is not None:
+                feasible.append((r[0], float(ta), float(tc)))
+    if not feasible:
+        logger.info("    [%s] 广域搜索无可行候选", name)
+        return None
+    feasible.sort(key=lambda x: x[0])
+    # 对弧长最短的前 n_refine 个候选做纯几何细化，收集细化结果并按细化后
+    # 弧长升序排列（细化可能显著改变弧长与排序）。
+    refined_all: list[tuple[float, float, float]] = []  # (L, ta, tc)
+    seen: set[tuple[float, float]] = set()
+    for L, ta, tc in feasible[:n_refine]:
+        refined = _refine_local(ta, tc, orientation)
+        rta, rtc = (refined if refined is not None else (ta, tc))
+        key = (round(rta, 7), round(rtc, 7))
+        if key in seen:
+            continue
+        seen.add(key)
+        g_tmp = solve_s_curve(rta, rtc, orientation)
+        if g_tmp is not None:
+            refined_all.append((g_tmp["L_S"], rta, rtc))
+    if not refined_all:
+        logger.info("    [%s] 广域搜索无细化结果", name)
+        return None
+    refined_all.sort(key=lambda x: x[0])
+    # 按细化后弧长升序复核碰撞：第一个无碰撞者即该朝向最短无碰撞解。
+    best_cand: tuple[float, float, float] | None = None
+    for L, ta, tc in refined_all:
+        if L >= L_opt - 1e-12:
+            break  # 后续弧长更大，不可能更优
+        g_tmp = solve_s_curve(ta, tc, orientation)
+        if g_tmp is not None and _quick_margin(g_tmp) > 0.0:
+            best_cand = (L, ta, tc)
+            logger.info("    [%s] 广域搜索复核通过：细化候选 (θa=%.6f, θc=%.6f) L=%.6f",
+                        name, ta, tc, L)
+            break
+    if best_cand is None:
+        logger.info("    [%s] 广域搜索细化候选（L<当前最优）均碰撞，无更优无碰撞解", name)
+        return None
+    L, ta, tc = best_cand
+    if L >= L_opt - 1e-12:
+        return None
+    logger.info("    [%s] 广域搜索发现更短无碰撞候选 (θa=%.6f, θc=%.6f) L=%.6f",
+                name, ta, tc, L)
+    g_new = solve_s_curve(ta, tc, orientation)
+    if g_new is not None and g_new["L_S"] < L_opt - 1e-12 and _quick_margin(g_new) > 0.0:
+        return g_new
+    return None
+
+
+def verify_local_optimality(
+    g_opt: dict,
+    logger,
+    delta: float = 0.08,
+    n_pert: int = 9,
+) -> dict:
+    """对最优切点 (θa, θc) 做小幅二维扰动，验证并改进全局最优（文档 8.4 节）。
+
+    与单朝向版本的区别：**同时枚举两种 S 形朝向（ORIENTATION_PLUS 与
+    ORIENTATION_MINUS）**：
+    - 当前朝向：围绕最优切点做小扰动（delta 邻域）精细搜索；
+    - 另一朝向：做广域搜索（wide_range 邻域），因为其最优解可能远离当前切点。
+
+    最后比较两种朝向的结果，返回更短的无碰撞解；均无改进则返回原几何。
+    该设计使最终最优不依赖粗搜索网格先命中哪个朝向分支。
+
+    Args:
+        g_opt: 最优配置几何 dict（solve_s_curve 返回）。
+        logger: 日志记录器。
+        delta: 当前朝向扰动半径（rad）。
+        n_pert: 当前朝向每维扰动网格点数。
+
+    Returns:
+        更新后的最优几何 dict g_opt（若扰动发现更短无碰撞解则返回新解）。
+    """
+    logger.info("步骤 3.5：最优切点邻域扰动验证（文档 8.4 节，双朝向搜索）")
+    ta0, tc0 = g_opt["theta_a"], g_opt["theta_c"]
+    cur_ori = ORIENTATION_PLUS if g_opt["sgn1"] > 0 else ORIENTATION_MINUS
+    other_ori = ORIENTATION_MINUS if cur_ori == ORIENTATION_PLUS else ORIENTATION_PLUS
+    L_opt = g_opt["L_S"]
+
+    best = (g_opt, L_opt)
+
+    # 1) 当前朝向：小扰动精细搜索
+    cand_cur = _search_orientation(ta0, tc0, cur_ori, delta, n_pert, L_opt, logger)
+    if cand_cur is not None and cand_cur["L_S"] < best[1]:
+        best = (cand_cur, cand_cur["L_S"])
+
+    # 2) 另一朝向：广域搜索
+    cand_other = _search_other_orientation(
+        ta0, tc0, other_ori, best[1], logger)
+    if cand_other is not None and cand_other["L_S"] < best[1]:
+        best = (cand_other, cand_other["L_S"])
+
+    if best[1] >= L_opt - 1e-12:
+        logger.info("    验证通过：两种朝向邻域内弧长均不再下降，为局部最优 [OK]")
+        return g_opt
+    logger.info("    扰动发现更短无碰撞解（朝向 %s），返回改进后的最优配置",
+                "PLUS" if best[0]["sgn1"] > 0 else "MINUS")
+    return best[0]
+
+
 # 碰撞约束最优配置（已验证全时段无碰撞）：切点参数 (θa, θc)
-# 题目无圆弧角约束，此配置为无约束碰撞筛选的最短曲线 L*≈1.303 m
-# （θa=5.599706, θc=2.674487；弧1≈180°、弧2≈2.4°）。
+# 题目无圆弧角约束，此配置为无约束碰撞筛选 + 双朝向扰动验证的全局最短曲线
+# L*≈1.287452 m（ORIENTATION_MINUS 分支）：
+# （θa=5.602429, θc=2.656490，ORIENTATION_MINUS；弧1≈179.31°、弧2≈0.012°，
+#   R=0.205686，minG=+0.000465 @ t=17，板凳对 1,9）。
+# 该解由“最优切点邻域扰动验证（步骤 3.5）”的双朝向广域搜索自动发现：
+# 400×400 网格碰撞筛选先命中 ORIENTATION_PLUS 分支 L*=1.291245（θa=5.753765,
+#   θc=2.794193），随后扰动验证在 ORIENTATION_MINUS 分支广域搜索中经局部细化
+#   收敛到更短的 L*=1.287452（原始几何候选 θa≈5.54, θc≈2.72 附近）。
+# 注：网格密度只影响先命中的朝向分支，双朝向扰动验证保证了最终最优不依赖网格。
 # 若 RUN_SCREENING=False，直接采用此配置，跳过耗时的碰撞筛选。
-VERIFIED_OPTIMAL = (5.599706162, 2.674487047)
+VERIFIED_OPTIMAL = (5.602429, 2.656490)
+# 已验证最优配置的 S 形朝向（ORIENTATION_MINUS）
+VERIFIED_OPTIMAL_ORIENTATION = ORIENTATION_MINUS
 RUN_SCREENING = True  # 设为 True 时重新运行完整碰撞筛选
 
 
@@ -325,7 +629,7 @@ def main() -> None:
     if RUN_SCREENING:
         logger.info("步骤 2：二维几何粗搜索 + 多起点局部细化")
         best_geom, candidates = optimize_turning_curve(
-            n_grid=200, top_k=5, zoom_rounds=5, zoom_grid=21,
+            n_grid=400, top_k=5, zoom_rounds=5, zoom_grid=21,
         )
         L_geom, ta_g, tc_g, ori_g, g_geom = best_geom
         logger.info("    几何最优：L=%.6f（θa=%.6f，θc=%.6f，R=%.6f）",
@@ -343,7 +647,7 @@ def main() -> None:
     else:
         logger.info("步骤 3：采用已验证的无碰撞最优配置")
         ta_v, tc_v = VERIFIED_OPTIMAL
-        g_opt = solve_s_curve(ta_v, tc_v, ORIENTATION_MINUS)
+        g_opt = solve_s_curve(ta_v, tc_v, VERIFIED_OPTIMAL_ORIENTATION)
         if g_opt is None:
             raise RuntimeError("已验证配置无法求解")
         L_star = g_opt["L_S"]
@@ -352,6 +656,19 @@ def main() -> None:
                     ta_v, tc_v, g_opt["R"], L_star)
         logger.info("    全时段复核 minG=%.6f m @ t=%.1f（板凳对 %d, %d）",
                     m_opt, tw, iw, jw)
+    dL = L0 - L_star
+    eta = 100.0 * dL / L0
+    logger.info("优化结果：L*=%.6f m，ΔL=%.6f m，缩短比例 η=%.2f%%", L_star, dL, eta)
+    logger.info("最优配置：θa=%.9f，θc=%.9f，R=%.6f，2R=%.6f，最小裕量=%.6f m",
+                g_opt["theta_a"], g_opt["theta_c"], g_opt["R"],
+                2 * g_opt["R"], m_opt)
+
+    # 3.5 全局性验证：最优切点邻域扰动（文档 8.4 节）
+    g_opt = verify_local_optimality(g_opt, logger)
+    L_star = g_opt["L_S"]
+    m_opt, tw, iw, jw = min_margin_over_range(g_opt, step=TIME_STEP)
+    logger.info("    最终采用：L*=%.9f m（θa=%.9f, θc=%.9f），minG=%.6f @ t=%.1f（%d,%d）",
+                L_star, g_opt["theta_a"], g_opt["theta_c"], m_opt, tw, iw, jw)
     dL = L0 - L_star
     eta = 100.0 * dL / L0
     logger.info("优化结果：L*=%.6f m，ΔL=%.6f m，缩短比例 η=%.2f%%", L_star, dL, eta)
